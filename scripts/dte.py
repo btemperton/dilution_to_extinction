@@ -39,6 +39,20 @@ def process_row(row):
         positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(row.cells_per_well, row.rel_abund,num_wells=row.num_wells_inoculated)
 
     taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+
+    if row.num_isolates > taxon_pure_high:
+        p_value = np.sum(taxon_pure_wells >= row.num_isolates) / number_of_experiments
+        within_estimates = 'no'
+        deviance = row.num_isolates - taxon_pure_high
+    elif row.num_isolates < taxon_pure_low:
+        p_value = np.sum(taxon_pure_wells <= row.num_isolates) / number_of_experiments
+        within_estimates = 'no'
+        deviance = row.num_isolates - taxon_pure_low
+    else:
+        p_value = ''
+        within_estimates = 'yes'
+        deviance = ''
+
     taxon_positive_med, taxon_positive_low, taxon_positive_high = get_CI(taxon_positive_wells, as_string=False)
     positive_med, positive_low, positive_high = get_CI(positive_wells, as_string=False)
     pure_med, pure_low, pure_high = get_CI(pure_wells, as_string=False)
@@ -46,21 +60,22 @@ def process_row(row):
                       positive_med, positive_low, positive_high,
                       taxon_positive_med, taxon_positive_low, taxon_positive_high,
                       pure_med, pure_low, pure_high,
-                      taxon_pure_med, taxon_pure_low, taxon_pure_high],
+                      taxon_pure_med, taxon_pure_low, taxon_pure_high, within_estimates, deviance, p_value],
                      index=['ID', 'Site', 'num_inoculated_wells',
                             'positive_well_med', 'positive_well_95pc_low','positive_well_95pc_high',
                             'taxon_positive_med', 'taxon_positive_95pc_low', 'taxon_positive_95pc_high',
                                 'pure_well_med', 'pure_well_95pc_low', 'pure_well_95pc_high',
                                'taxon_pure_med',
                                'taxon_pure_95pc_low',
-                               'taxon_pure_95pc_high'])
+                               'taxon_pure_95pc_high', 'within_estimates', 'deviance', 'p_value'])
 
 def run_bootstrap_per_ASV(input_file):
     print(f'Reading in ASV file - {input_file} and running with {number_of_experiments} simulations')
     df = pd.read_csv(input_file)
-    tqdm_pandas(tqdm())
+    tqdm.pandas()
     results = df.progress_apply(process_row, axis=1)
-    results.to_csv(f'../data/ASV_cultivation_bootstrapped_numbers_max_viability_{number_of_experiments}_simulations.csv', index=False)
+    joined_results = df.merge(results, how='left', on=['ID', 'Site'])
+    joined_results.to_csv(f'./data/ASV_cultivation_bootstrapped_numbers_max_viability_{number_of_experiments}_simulations.joined.csv', index=False)
 
 def process(job):
     test_proportions = np.arange(start=0.0, stop=1, step=0.001)
@@ -81,19 +96,19 @@ def estimate_required_proportion_for_underepresentation():
     number_of_wells = np.arange(start=92, stop=92*101, step=92)
     inoculum=[1,1.27, 1.96, 2,3,4,5]
     jobs = list(itertools.product(number_of_wells, inoculum))
-    with Pool(4) as p:
+    with Pool(16) as p:
             results = list(tqdm(p.imap(process, jobs), total=len(jobs), desc='Estimating proportion limits:'))
     results_df = pd.DataFrame(results, columns=['number_of_inoculated_wells', 'inoculum', 'p_i', 'taxon_pure_low'])
-    results_df.to_csv(f'../data/estimate_min_num_wells_to_identify_viability_sensitivity_{number_of_experiments}_simulations.csv', index=False)
+    results_df.to_csv(f'./data/estimate_min_num_wells_to_identify_viability_sensitivity_{number_of_experiments}_simulations.csv', index=False)
     print(results_df)
 
 
 
 def main():
     global number_of_experiments
-    number_of_experiments = 999
-    #run_bootstrap_per_ASV('../data/ASV_cultivation_numbers.csv')
-    estimate_required_proportion_for_underepresentation()
+    number_of_experiments = 9999
+    run_bootstrap_per_ASV('./data/ASV_cultivation_numbers.csv')
+    #estimate_required_proportion_for_underepresentation()
 
 if __name__=="__main__":
     main()
