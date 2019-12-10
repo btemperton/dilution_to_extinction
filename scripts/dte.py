@@ -11,14 +11,18 @@ from multiprocessing import Pool
 def calculate_dte(inoculum_size, proportion_of_taxa, viability=1, num_wells=96):
     inocula=np.random.poisson(inoculum_size, num_wells)
     taxon_wells=np.random.binomial(inocula, proportion_of_taxa)
-    viable_taxon_wells=np.random.binomial(taxon_wells, viability)
     positive_wells = np.sum(inocula >=1)
     pure_wells = np.sum(inocula==1)
     #This captures all the wells with greater than 0 cells where the number
     #of cells in it are all from the selected taxon
-    positive_wells_with_taxon=np.sum(viable_taxon_wells>=1)
-    taxon_pure_wells = np.sum((viable_taxon_wells == inocula) & (inocula >0))
+    positive_wells_with_taxon=np.sum(taxon_wells>=1)
+    taxon_pure_wells = np.sum((taxon_wells == inocula) & (inocula >0))
+    if viability <1:
+        pure_wells_to_test =  taxon_wells[(taxon_wells == inocula) & (inocula >0)]
+        viable_pure_wells=np.random.binomial(pure_wells_to_test, viability)
+        taxon_pure_wells = np.sum(viable_pure_wells>=1)
     return positive_wells, pure_wells, positive_wells_with_taxon, taxon_pure_wells
+
 
 def get_CI(array_of_numbers, as_string=True, ci=95):
   median_value = np.median(array_of_numbers)
@@ -74,7 +78,7 @@ def process_row(row):
 def run_bootstrap_per_ASV(input_file):
     print(f'Reading in ASV file - {input_file} and running with {number_of_experiments} simulations')
     df = pd.read_csv(input_file)
-    tqdm.pandas()
+    tqdm_pandas(tqdm())
     results = df.progress_apply(process_row, axis=1)
     joined_results = df.merge(results, how='left', on=['ID', 'Site'])
     joined_results.to_csv(f'./data/ASV_cultivation_bootstrapped_numbers_max_viability_{number_of_experiments}_simulations.joined.csv', index=False)
@@ -125,11 +129,42 @@ def calculate_interaction_rel_abundance_inoculum():
     results_df.to_csv(f'./data/inoculum_rel_abundance_interaction_plot_data_{number_of_experiments}_simulations.csv', index=False)
 
 
+def process_viability(row):
+    positive_wells = np.zeros(number_of_experiments)
+    pure_wells = np.zeros(number_of_experiments)
+    taxon_positive_wells = np.zeros(number_of_experiments)
+    taxon_pure_wells = np.zeros(number_of_experiments)
+
+    viability_range = np.arange(start=0, stop=1, step=0.01)[::-1]
+    max_viability = 0
+
+    for v in viability_range:
+        print(f'*** Processing ID:{row.ID} at site: {row.Site}, testing viability {v:.2f} ***')
+
+        for i in range(number_of_experiments):
+            positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(row.cells_per_well, row.rel_abund, viability=v, num_wells=row.num_wells_inoculated)
+
+        taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+        if row.num_isolates >=taxon_pure_low and row.num_isolates <= taxon_pure_high:
+            max_viability = v
+            break
+    return pd.Series([row.ID, row.Site, row.rel_abund, row.num_wells_inoculated,
+                    row.num_isolates, row.cells_per_well,
+                    row.taxon_pure_95pc_low, max_viability], index=['ID', 'Site',
+                                                                'rel_abund', 'num_inoculated_wells',
+                                                                'num_isolates', 'cells_per_well', 'taxon_pure_95pc_low', 'max_viability'])
 
 
 
+def estimate_viability_range_for_underrepresented_taxa():
+    print('*** Calculating maximum viability to explain observed number of wells ***')
 
-
+    df = pd.read_csv(f'./data/ASV_cultivation_bootstrapped_numbers_max_viability_{number_of_experiments}_simulations.joined.csv')
+    lower_than_expected_df = df[df.deviance <0]
+    print(lower_than_expected_df.shape)
+    tqdm_pandas(tqdm())
+    results = lower_than_expected_df.progress_apply(process_viability, axis=1)
+    results.to_csv(f'./data/estimate_max_viability_range_for_underrepresented_taxa_{number_of_experiments}_simulations.csv', index=False)
 
 
 def main():
@@ -138,6 +173,7 @@ def main():
     #run_bootstrap_per_ASV('./data/ASV_cultivation_numbers.csv')
     #estimate_required_proportion_for_underepresentation()
     #calculate_interaction_rel_abundance_inoculum()
+    estimate_viability_range_for_underrepresented_taxa()
 
 if __name__=="__main__":
     main()
