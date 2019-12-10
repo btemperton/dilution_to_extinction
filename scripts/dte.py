@@ -2,6 +2,8 @@ import numpy as np
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib import animation
+from mpl_toolkits.mplot3d import Axes3D
 from tqdm import tqdm, tqdm_pandas
 import itertools
 from multiprocessing import Pool
@@ -102,13 +104,40 @@ def estimate_required_proportion_for_underepresentation():
     results_df.to_csv(f'./data/estimate_min_num_wells_to_identify_viability_sensitivity_{number_of_experiments}_simulations.csv', index=False)
     print(results_df)
 
+def calculate_interaction_rel_abundance_inoculum():
+    results = []
+    relative_abundance = np.arange(start=0, stop=1.01, step=0.01)
+    inoculum = np.arange(start=1, stop=11, step=1)
+    num_wells_per_experiment = 9999
+
+    for cells_per_well, rel_abund in itertools.product(inoculum, relative_abundance):
+        print(f'Running {cells_per_well} cells per well with a relative abundance of {rel_abund}')
+        positive_wells = np.zeros(number_of_experiments)
+        pure_wells = np.zeros(number_of_experiments)
+        taxon_positive_wells = np.zeros(number_of_experiments)
+        taxon_pure_wells = np.zeros(number_of_experiments)
+        for i in range(number_of_experiments):
+            positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(cells_per_well, rel_abund, num_wells=num_wells_per_experiment)
+        taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+        results.append((cells_per_well, rel_abund, taxon_pure_med, taxon_pure_low, taxon_pure_high))
+
+    results_df = pd.DataFrame(results, columns=['cells_per_well', 'relative_abundance', 'taxon_pure_med', 'taxon_pure_low', 'taxon_pure_high'])
+    results_df.to_csv(f'./data/inoculum_rel_abundance_interaction_plot_data_{number_of_experiments}_simulations.csv', index=False)
+
+
+
+
+
+
+
 
 
 def main():
     global number_of_experiments
     number_of_experiments = 9999
-    run_bootstrap_per_ASV('./data/ASV_cultivation_numbers.csv')
+    #run_bootstrap_per_ASV('./data/ASV_cultivation_numbers.csv')
     #estimate_required_proportion_for_underepresentation()
+    #calculate_interaction_rel_abundance_inoculum()
 
 if __name__=="__main__":
     main()
