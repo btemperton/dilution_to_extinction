@@ -129,6 +129,27 @@ def calculate_interaction_rel_abundance_inoculum():
     results_df.to_csv(f'./data/inoculum_rel_abundance_interaction_plot_data_{number_of_experiments}_simulations.csv', index=False)
 
 
+def estimate_viability(cells_per_well, rel_abund, observed_pure, num_wells, test_min=0, test_max=1, test_step=0.01):
+    positive_wells = np.zeros(number_of_experiments)
+    pure_wells = np.zeros(number_of_experiments)
+    taxon_positive_wells = np.zeros(number_of_experiments)
+    taxon_pure_wells = np.zeros(number_of_experiments)
+
+    viability_range = np.arange(start=test_min, stop=test_max, step=test_step)[::-1]
+    max_viability = 0
+    for v in viability_range:
+        print(f'*** Testing viability {v:.4f} ***')
+
+        for i in range(number_of_experiments):
+            positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(cells_per_well, rel_abund, viability=v, num_wells=num_wells)
+
+        taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+        if observed_pure >=taxon_pure_low and observed_pure <= taxon_pure_high:
+            max_viability = v
+            break
+    return max_viability
+
+
 def process_viability(row):
     positive_wells = np.zeros(number_of_experiments)
     pure_wells = np.zeros(number_of_experiments)
@@ -166,6 +187,26 @@ def estimate_viability_range_for_underrepresented_taxa():
     results = lower_than_expected_df.progress_apply(process_viability, axis=1)
     results.to_csv(f'./data/estimate_max_viability_range_for_underrepresented_taxa_{number_of_experiments}_simulations.csv', index=False)
 
+def make_inoculum_rel_abundance_interaction_plot():
+    fig = plt.figure(figsize=[6,6], dpi=100)
+    ax = Axes3D(fig)
+    ax.set_xlabel('Inoculum', fontsize=12)
+    ax.set_ylabel('Relative abundance', fontsize=12)
+    ax.set_zlabel('% Pure', fontsize=12)
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
+    ax.tick_params(axis='both', which='major', labelsize=10)
+    ax.tick_params(axis='both', which='minor', labelsize=8)
+
+    df = pd.read_csv(f'./data/inoculum_rel_abundance_interaction_plot_data_{number_of_experiments}_simulations.csv')
+
+    ax = fig.gca(projection='3d')
+    ax.plot_trisurf(df['cells_per_well'], df['relative_abundance'], df['taxon_pure_med']/9999*100,
+                    cmap=plt.cm.jet, linewidth=0.0, antialiased=True)
+    ax.view_init(azim=-10)
+    plt.show()
+
 
 def main():
     global number_of_experiments
@@ -173,7 +214,7 @@ def main():
     #run_bootstrap_per_ASV('./data/ASV_cultivation_numbers.csv')
     #estimate_required_proportion_for_underepresentation()
     #calculate_interaction_rel_abundance_inoculum()
-    estimate_viability_range_for_underrepresented_taxa()
-
+    #estimate_viability_range_for_underrepresented_taxa()
+    #make_inoculum_rel_abundance_interaction_plot()
 if __name__=="__main__":
     main()
