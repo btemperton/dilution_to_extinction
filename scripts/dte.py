@@ -34,6 +34,17 @@ def get_CI(array_of_numbers, as_string=True, ci=95):
     return median_value, percentiles[0], percentiles[1]
 
 
+def bootstrap_dte(cells_per_well, rel_abund, viability, num_wells):
+    positive_wells = np.zeros(number_of_experiments)
+    pure_wells = np.zeros(number_of_experiments)
+    taxon_positive_wells = np.zeros(number_of_experiments)
+    taxon_pure_wells = np.zeros(number_of_experiments)
+    for i in range(number_of_experiments):
+        positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(cells_per_well, rel_abund, viability=viability, num_wells=num_wells)
+    taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+    return taxon_pure_med, taxon_pure_low, taxon_pure_high
+
+
 def process_row(row):
     positive_wells = np.zeros(number_of_experiments)
     pure_wells = np.zeros(number_of_experiments)
@@ -86,13 +97,10 @@ def run_bootstrap_per_ASV(input_file):
 def process(job):
     test_proportions = np.arange(start=0.0, stop=1, step=0.001)
     for p in test_proportions:
-        positive_wells = np.zeros(number_of_experiments)
-        pure_wells = np.zeros(number_of_experiments)
-        taxon_positive_wells = np.zeros(number_of_experiments)
-        taxon_pure_wells = np.zeros(number_of_experiments)
-        for i in range(number_of_experiments):
-            positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(job[1], p,num_wells=job[0])
-        taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+        taxon_pure_med, taxon_pure_low, taxon_pure_high = bootstrap_dte(cells_per_well=job[1],
+                                                                        rel_abund=p,
+                                                                        viability=1,
+                                                                        num_wells=job[0])
         if (taxon_pure_low >= 1):
             return((job[0], job[1], p, taxon_pure_low))
 
@@ -112,42 +120,41 @@ def calculate_interaction_rel_abundance_inoculum():
     results = []
     relative_abundance = np.arange(start=0, stop=1.01, step=0.01)
     inoculum = np.arange(start=1, stop=11, step=1)
-    num_wells_per_experiment = 9999
 
     for cells_per_well, rel_abund in itertools.product(inoculum, relative_abundance):
         print(f'Running {cells_per_well} cells per well with a relative abundance of {rel_abund}')
-        positive_wells = np.zeros(number_of_experiments)
-        pure_wells = np.zeros(number_of_experiments)
-        taxon_positive_wells = np.zeros(number_of_experiments)
-        taxon_pure_wells = np.zeros(number_of_experiments)
-        for i in range(number_of_experiments):
-            positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(cells_per_well, rel_abund, num_wells=num_wells_per_experiment)
-        taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+        taxon_pure_med, taxon_pure_low, taxon_pure_high = bootstrap_dte(cells_per_well, rel_abund, num_wells= 9999)
         results.append((cells_per_well, rel_abund, taxon_pure_med, taxon_pure_low, taxon_pure_high))
 
     results_df = pd.DataFrame(results, columns=['cells_per_well', 'relative_abundance', 'taxon_pure_med', 'taxon_pure_low', 'taxon_pure_high'])
     results_df.to_csv(f'./data/inoculum_rel_abundance_interaction_plot_data_{number_of_experiments}_simulations.csv', index=False)
 
 
-def estimate_viability(cells_per_well, rel_abund, observed_pure, num_wells, test_min=0, test_max=1, test_step=0.01):
-    positive_wells = np.zeros(number_of_experiments)
-    pure_wells = np.zeros(number_of_experiments)
-    taxon_positive_wells = np.zeros(number_of_experiments)
-    taxon_pure_wells = np.zeros(number_of_experiments)
-
+def estimate_viability(cells_per_well, rel_abund, observed_pure, num_wells, test_min=0, test_max=1, test_step=0.1):
     viability_range = np.arange(start=test_min, stop=test_max, step=test_step)[::-1]
-    max_viability = 0
+    viability_values = []
     for v in viability_range:
         print(f'*** Testing viability {v:.4f} ***')
-
-        for i in range(number_of_experiments):
-            positive_wells[i], pure_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(cells_per_well, rel_abund, viability=v, num_wells=num_wells)
-
-        taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
+        taxon_pure_med, taxon_pure_low, taxon_pure_high = bootstrap_dte(cells_per_well, rel_abund, v, num_wells)
         if observed_pure >=taxon_pure_low and observed_pure <= taxon_pure_high:
-            max_viability = v
-            break
-    return max_viability
+            viability_values.append(v)
+    try:
+        min = np.min(viability_values)
+    except ValueError:
+        min = 0
+    try:
+        max = np.max(viability_values)
+    except ValueError:
+        max = 1
+
+    if test_step==0.1:
+        print(f'*** Refining between {np.max((min-test_step, 0)):.4f} and {np.min((max+test_step,1)):.4f}***')
+        min, max = estimate_viability(cells_per_well, rel_abund, observed_pure, num_wells,
+                    test_min=np.max((np.min(viability_values)-test_step, 0)),
+                    test_max=np.min((np.max(viability_values)+test_step,1)),
+                    test_step=0.01)
+
+    return min, max
 
 
 def process_viability(row):
