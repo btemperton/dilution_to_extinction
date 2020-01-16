@@ -158,31 +158,72 @@ def calculate_interaction_rel_abundance_inoculum():
     results_df = pd.DataFrame(results, columns=['cells_per_well', 'relative_abundance', 'taxon_pure_med', 'taxon_pure_low', 'taxon_pure_high'])
     results_df.to_csv(f'./data/inoculum_rel_abundance_interaction_plot_data_{number_of_experiments}_simulations.csv', index=False)
 
+def process_viability_multiprocessor(items):
+    s = bootstrap_dte(items[0], items[1], items[2], items[3])
+    taxon_pure_med = s.pure_well_med
+    taxon_pure_low = s.pure_well_95pc_low
+    taxon_pure_high = s.pure_well_95pc_high
+    if items[4] >=taxon_pure_low and items[4] <= taxon_pure_high:
+        return items[2]
+    else:
+        return 0
 
-def estimate_viability(cells_per_well, rel_abund, observed_pure, num_wells, test_min=0, test_max=1, test_step=0.1):
-    viability_range = np.arange(start=test_min, stop=test_max, step=test_step)[::-1]
-    viability_values = []
-    for v in viability_range:
-        print(f'*** Testing viability {v:.4f} ***')
-        taxon_pure_med, taxon_pure_low, taxon_pure_high = bootstrap_dte(cells_per_well, rel_abund, v, num_wells)
-        if observed_pure >=taxon_pure_low and observed_pure <= taxon_pure_high:
-            viability_values.append(v)
+def estimate_viability(cells_per_well, rel_abund, observed_pure, num_wells, test_min=0, test_max=1, initial_test_step=0.01):
+    viability_range = np.arange(start=test_min, stop=test_max, step=initial_test_step)
+    item_list = [(cells_per_well, rel_abund, v, num_wells, observed_pure) for v in viability_range]
+    print(f'Testing viability values between {test_min} and {test_max} in increments of {initial_test_step} to see at what viability an observed value of {observed_pure} wells out of {num_wells} wells falls within 95%CI intervals, given an inoculum of {cells_per_well:.2f} cells per well')
+    with Pool(16) as p:
+        viability_values = list(p.imap(process_viability_multiprocessor, item_list))
+        #print(viability_values)
+
+    cleaned_viability_values = [x for x in viability_values if x !=0]
     try:
-        min = np.min(viability_values)
-    except ValueError:
-        min = 0
-    try:
-        max = np.max(viability_values)
-    except ValueError:
-        max = 1
+        min = np.min(cleaned_viability_values)
+        max= np.max(cleaned_viability_values)
 
-    if test_step==0.1:
-        print(f'*** Refining between {np.max((min-test_step, 0)):.4f} and {np.min((max+test_step,1)):.4f}***')
-        min, max = estimate_viability(cells_per_well, rel_abund, observed_pure, num_wells,
-                    test_min=np.max((np.min(viability_values)-test_step, 0)),
-                    test_max=np.min((np.max(viability_values)+test_step,1)),
-                    test_step=0.01)
+        new_min = np.max([0,min-initial_test_step])
+        new_max = np.min([1,max+initial_test_step])
+        new_step = initial_test_step/10
+        print(f'''Minimum and maximum values are {min} and {max}, respectively - refining:\nTesting values between {new_min:.3f} and {new_max:.3f} in increments of {new_step}''')
 
+        viability_range = np.arange(start=new_min, stop=new_max, step=new_step)
+        item_list = [(cells_per_well, rel_abund, v, num_wells, observed_pure) for v in viability_range]
+
+        with Pool(16) as p:
+            viability_values = list(p.imap(process_viability_multiprocessor, item_list))
+            #print(viability_values)
+        cleaned_viability_values = [x for x in viability_values if x !=0]
+
+        min = np.min(cleaned_viability_values)
+        max= np.max(cleaned_viability_values)
+    except ValueError:
+        #To get to here, the list of viability values is full of zeros, which means
+        #the range hasn't been found. This is most likely due to extremely low viability
+        #So, we set new_min to 0 and new_max to 0.1 and try at steps of 0.0001
+        new_step = initial_test_step
+        while len(cleaned_viability_values) ==0 and new_step > 0.00001:
+            new_min = 0
+            new_max = new_step
+            new_step=new_step/10
+            print(f'Trying values between {new_min} and {new_max} with increments of {new_step}')
+            viability_range = np.arange(start=new_min, stop=new_max, step=new_step)
+            item_list = [(cells_per_well, rel_abund, v, num_wells, observed_pure) for v in viability_range]
+
+            with Pool(16) as p:
+                viability_values = list(p.imap(process_viability_multiprocessor, item_list))
+            #print(viability_values)
+            cleaned_viability_values = [x for x in viability_values if x !=0]
+            #print(cleaned_viability_values)
+        if len(cleaned_viability_values) > 0:
+            min = np.min(cleaned_viability_values)
+            max= np.max(cleaned_viability_values)
+        else:
+            print(f'Gave up - estimated viability is really rather low.')
+            min=np.NaN
+            max=np.NaN
+
+
+    print(f'The final bootstrapped values for viability are {min:1.3%}-{max:1.3%} %')
     return min, max
 
 
@@ -202,14 +243,18 @@ def process_viability(row):
             positive_wells[i], single_wells[i], taxon_positive_wells[i], taxon_pure_wells[i] = calculate_dte(row.cells_per_well, row.rel_abund, viability=v, num_wells=row.num_wells_inoculated)
 
         taxon_pure_med, taxon_pure_low, taxon_pure_high = get_CI(taxon_pure_wells, as_string=False)
-        if row.num_isolates >=taxon_pure_low and row.num_isolates <= taxon_pure_high:
-            max_viability = v
-            break
-    return pd.Series([row.ID, row.Site, row.rel_abund, row.num_wells_inoculated,
-                    row.num_isolates, row.cells_per_well,
-                    row.taxon_pure_95pc_low, max_viability], index=['ID', 'Site',
-                                                                'rel_abund', 'num_inoculated_wells',
-                                                                'num_isolates', 'cells_per_well', 'taxon_pure_95pc_low', 'max_viability'])
+#        if row.num_isolates >=taxon_pure_low and row.num_isolates <= taxon_pure_high:
+#            max_viability = v
+#            break
+#    return pd.Series([row.ID, row.Site, row.rel_abund, row.num_wells_inoculated,
+#                    row.num_isolates, row.cells_per_well,
+#                    row.taxon_pure_95pc_low, min_viability, max_viability], index=['ID', 'Site',
+#                                                                'rel_abund', 'num_inoculated_wells',
+#                                                                'num_isolates', 'cells_per_well', 'taxon_pure_95pc_low', 'min_viability','max_viability'])
+
+def process_viability(row):
+    min, max = estimate_viability(row.cells_per_well, row.rel_abund, row.num_isolates, row.num_wells_inoculated)
+    return pd.Series([row.ID, row.Site, row.rel_abund, row.num_wells_inoculated,  row.num_isolates, row.cells_per_well, min, max], index=['ID','Site','rel_abund','num_inoculated_wells','num_isolates','cells_per_well','min_viability', 'max_viability'])
 
 
 
@@ -218,10 +263,9 @@ def estimate_viability_range_for_underrepresented_taxa():
 
     df = pd.read_csv(f'./data/ASV_cultivation_bootstrapped_numbers_max_viability_{number_of_experiments}_simulations.joined.csv')
     lower_than_expected_df = df[df.deviance <0]
-    print(lower_than_expected_df.shape)
     tqdm_pandas(tqdm())
     results = lower_than_expected_df.progress_apply(process_viability, axis=1)
-    results.to_csv(f'./data/estimate_max_viability_range_for_underrepresented_taxa_{number_of_experiments}_simulations.csv', index=False)
+    results.to_csv(f'./data/estimate_viability_range_for_underrepresented_taxa_{number_of_experiments}_simulations.csv', index=False)
 
 def make_inoculum_rel_abundance_interaction_plot():
     fig = plt.figure(figsize=[6,6], dpi=100)
@@ -315,7 +359,7 @@ def generate_3d_plot(x_label, y_label, z_label, x, y, z, filename):
 
 def main():
     global number_of_experiments
-    number_of_experiments = 999
+    number_of_experiments = 9999
 
     global number_of_wells_to_simulate
     number_of_wells_to_simulate=460
@@ -327,54 +371,58 @@ def main():
 
     #generate_3d_plot_data()
 
-    df = pd.read_csv(f'./data/3d_plot_data_{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.csv')
-    full_viability = df[df['viability'] == 1]
+    #df = pd.read_csv(f'./data/3d_plot_data_{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.csv')
+    #full_viability = df[df['viability'] == 1]
 
-    generate_3d_plot(x_label='Inoculum',
-                     y_label='Relative Abundance',
-                     z_label='Taxon Positive Well',
-                     x=full_viability['cells_per_well'],
-                     y=full_viability['rel_abund'],
-                     z=full_viability['taxon_positive_med']/number_of_wells_to_simulate*100,
-                     filename=f'taxon_positive_med.viability_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
+    #generate_3d_plot(x_label='Inoculum',
+    #                 y_label='Relative Abundance',
+    #                 z_label='Taxon Positive Well',
+    #                 x=full_viability['cells_per_well'],
+    #                 y=full_viability['rel_abund'],
+    #                 z=full_viability['taxon_positive_med']/number_of_wells_to_simulate*100,
+    #                 filename=f'taxon_positive_med.viability_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
 
-    generate_3d_plot(x_label='Inoculum',
-                     y_label='Relative Abundance',
-                     z_label='Pure Well',
-                     x=full_viability['cells_per_well'],
-                     y=full_viability['rel_abund'],
-                     z=full_viability['pure_well_med']/number_of_wells_to_simulate*100,
-                     filename=f'pure_well_med.viability_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
+    #generate_3d_plot(x_label='Inoculum',
+    #                 y_label='Relative Abundance',
+    #                 z_label='Pure Well',
+    #                 x=full_viability['cells_per_well'],
+    #                 y=full_viability['rel_abund'],
+    #                 z=full_viability['pure_well_med']/number_of_wells_to_simulate*100,
+    #                 filename=f'pure_well_med.viability_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
 
-    generate_3d_plot(x_label='Inoculum',
-                     y_label='Relative Abundance',
-                     z_label='Taxon positive well / Positive Well',
-                     x=full_viability['cells_per_well'],
-                     y=full_viability['rel_abund'],
-                     z=full_viability['taxon_positive_med'] / full_viability['positive_well_med'] * 100,
-                     filename=f'taxon_positive_med_frac.viability_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
+    #generate_3d_plot(x_label='Inoculum',
+    #                 y_label='Relative Abundance',
+    #                 z_label='Taxon positive well / Positive Well',
+    #                 x=full_viability['cells_per_well'],
+    #                 y=full_viability['rel_abund'],
+    #                 z=full_viability['taxon_positive_med'] / full_viability['positive_well_med'] * 100,
+    #                 filename=f'taxon_positive_med_frac.viability_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
 
-    full_abundance = df[df['rel_abund'] == 1]
+    #full_abundance = df[df['rel_abund'] == 1]
 
-    generate_3d_plot(x_label='Inoculum',
-                     y_label='Viability',
-                     z_label='Positive Well',
-                     x=full_abundance['cells_per_well'],
-                     y=full_abundance['viability'],
-                     z=full_abundance['positive_well_med'] / number_of_wells_to_simulate * 100,
-                     filename=f'positive_well_med.rel_abund_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
+    #generate_3d_plot(x_label='Inoculum',
+    #                 y_label='Viability',
+    #                 z_label='Positive Well',
+    #                 x=full_abundance['cells_per_well'],
+    #                 y=full_abundance['viability'],
+    #                 z=full_abundance['positive_well_med'] / number_of_wells_to_simulate * 100,
+    #                 filename=f'positive_well_med.rel_abund_1.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
 
-    inoculum_2 = df[df['cells_per_well'] == 2]
+    #inoculum_2 = df[df['cells_per_well'] == 2]
 
-    generate_3d_plot(x_label='Relative Abundance',
-                     y_label='Viability',
-                     z_label='Pure Well',
-                     x=inoculum_2['rel_abund'],
-                     y=inoculum_2['viability'],
-                     z=inoculum_2['pure_well_med'] / number_of_wells_to_simulate * 100,
-                     filename=f'pure_well_med.inoculum_2.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
+    #generate_3d_plot(x_label='Relative Abundance',
+    #                 y_label='Viability',
+    #                 z_label='Pure Well',
+    #                 x=inoculum_2['rel_abund'],
+    #                 y=inoculum_2['viability'],
+    #                 z=inoculum_2['pure_well_med'] / number_of_wells_to_simulate * 100,
+    #                 filename=f'pure_well_med.inoculum_2.{number_of_wells_to_simulate}_wells.{number_of_experiments}_bootstraps.3d_plot.mp4')
+    #cells_per_well, rel_abund, observed_pure, num_wells
+    #ID,Site,rel_abund,num_inoculated_wells,num_isolates,cells_per_well,taxon_pure_95pc_low,max_viability
+    #7471,FWC3,0.067158385,460,2,2.0,4.0,0.79
+    estimate_viability_range_for_underrepresented_taxa()
 
-
+    estimate_viability_range_for_
 
 
 
